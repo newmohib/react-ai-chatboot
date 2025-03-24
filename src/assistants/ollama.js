@@ -3,44 +3,55 @@
 export class Assistant {
   constructor(model = "gemma3:1b") {
     this.model = model;
-    this.apiUrl = "http://localhost:11434/api/generate"; // Ollama API
+    this.apiUrl = "http://localhost:3000/message"; // Corrected API URL
   }
 
+  // Function for standard non-streaming chat
   async chat(content) {
     try {
       const response = await fetch(this.apiUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: {
           model: this.model,
           prompt: content,
-          stream: false,
-        }),
+          stream: false, // Disable streaming for normal response
+        },
       });
+
       console.log({ response });
 
-      if (!response.ok) throw new Error(`Ollama API Error: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Ollama API Error: ${response.status}`);
+      }
 
-      const data = await response.json();
-      return data.response; // Returns the generated text
+      const data = await response.json(); // Assuming response is JSON
+      return data.response; // Return the generated text from Ollama API
     } catch (error) {
-      throw error;
+      throw new Error(`Error: ${error.message}`);
     }
   }
 
+  // Function for streaming chat
   async *chatStream(content) {
     try {
       const response = await fetch(this.apiUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           model: this.model,
           prompt: content,
-          stream: true,
+          stream: true, // Enable streaming
         }),
       });
 
-      if (!response.ok) throw new Error(`Ollama API Error: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Ollama API Error: ${response.status}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -52,22 +63,23 @@ export class Assistant {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process each JSON object correctly
+        // Split the buffer into lines
         const lines = buffer.split("\n");
         buffer = lines.pop(); // Keep the last incomplete line
 
+        // Process each complete line
         for (const line of lines) {
           if (!line.trim()) continue;
           try {
             const json = JSON.parse(line);
-            yield json.response; // Only yield response text
+            yield json.response; // Yield the response text from the stream
           } catch (err) {
             console.error("Failed to parse JSON chunk:", line);
           }
         }
       }
     } catch (error) {
-      throw error;
+      throw new Error(`Error: ${error.message}`);
     }
   }
 }

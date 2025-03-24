@@ -11,6 +11,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   function updateLastMessageContent(content) {
     setMessages((prevMessages) =>
@@ -59,18 +60,38 @@ function App() {
 
   return (
     <div className={styles.App}>
-      {isLoading && <Loader />}
-      <header className={styles.Header}>
-        <img className={styles.Logo} src="/chat-bot.png" />
-        <h2 className={styles.Title}>AI Chatbot</h2>
-      </header>
-      <div className={styles.ChatContainer}>
-        <Chat messages={messages} />
+      {/* {isLoading && <Loader />} */}
+      <div className={styles.ChatBotContainer}>
+        {!isChatOpen && (
+          <button
+            className={styles.ChatBotButton}
+            onClick={() => setIsChatOpen(true)}
+          >
+            <img src="/chat-bot.png" alt="Chatbot" />
+          </button>
+        )}
+        {isChatOpen && (
+          <div className={styles.ChatBox}>
+            <header className={styles.ChatHeader}>
+              <h3>AI Chatbot</h3>
+              <button
+                className={styles.CloseButton}
+                onClick={() => setIsChatOpen(false)}
+              >
+                ✖
+              </button>
+            </header>
+
+            <div className={styles.ChatContainer}>
+              <Chat isLoading={isLoading} messages={messages} />
+            </div>
+            <Controls
+              isDisabled={isLoading || isStreaming}
+              onSend={handleContentSend}
+            />
+          </div>
+        )}
       </div>
-      <Controls
-        isDisabled={isLoading || isStreaming}
-        onSend={handleContentSend}
-      />
     </div>
   );
 }

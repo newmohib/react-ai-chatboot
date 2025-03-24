@@ -1,6 +1,8 @@
+/* eslint-disable react/prop-types */
 import { useRef, useEffect, useMemo } from "react";
 import Markdown from "react-markdown";
 import styles from "./Chat.module.css";
+import { Loader } from "../Loader/Loader";
 
 const WELCOME_MESSAGE_GROUP = [
   {
@@ -9,7 +11,7 @@ const WELCOME_MESSAGE_GROUP = [
   },
 ];
 
-export function Chat({ messages }) {
+export function Chat({ messages, isLoading }) {
   const messagesEndRef = useRef(null);
   const messagesGroups = useMemo(
     () =>
@@ -32,17 +34,29 @@ export function Chat({ messages }) {
   return (
     <div className={styles.Chat}>
       {[WELCOME_MESSAGE_GROUP, ...messagesGroups].map(
-        (messages, groupIndex) => (
-          // Group
-          <div key={groupIndex} className={styles.Group}>
-            {messages.map(({ role, content }, index) => (
-              // Message
-              <div key={index} className={styles.Message} data-role={role}>
-                <Markdown>{content}</Markdown>
+        (messages, groupIndex) => {
+          console.log({ isLoading });
+
+          if (isLoading) {
+            return (
+              <div key={groupIndex} className={styles.Group}>
+                <div className={styles.Message} data-role="assistant">
+                  <Loader />
+                </div>
               </div>
-            ))}
-          </div>
-        )
+            );
+          }
+          return (
+            <div key={groupIndex} className={styles.Group}>
+              {messages.map(({ role, content }, index) => (
+                // Message
+                <div key={index} className={styles.Message} data-role={role}>
+                  <Markdown>{content}</Markdown>
+                </div>
+              ))}
+            </div>
+          );
+        }
       )}
 
       <div ref={messagesEndRef} />

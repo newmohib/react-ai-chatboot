@@ -3,7 +3,7 @@
 export class Assistant {
   constructor(model = "gemma3:1b") {
     this.model = model;
-    this.apiUrl = "http://localhost:3000/message"; // Corrected API URL
+    this.apiUrl = "http://localhost:3000/message";
   }
 
   // Function for standard non-streaming chat
@@ -14,21 +14,18 @@ export class Assistant {
         headers: {
           "Content-Type": "application/json",
         },
-        body: {
-          model: this.model,
+        body: JSON.stringify({
           prompt: content,
-          stream: false, // Disable streaming for normal response
-        },
+          stream: false,
+        }),
       });
 
-      console.log({ response });
-
       if (!response.ok) {
-        throw new Error(`Ollama API Error: ${response.status}`);
+        throw new Error(`API Error: ${response.status}`);
       }
 
-      const data = await response.json(); // Assuming response is JSON
-      return data.response; // Return the generated text from Ollama API
+      const data = await response.json();
+      return data.response || data.content;
     } catch (error) {
       throw new Error(`Error: ${error.message}`);
     }
@@ -43,38 +40,44 @@ export class Assistant {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: this.model,
           prompt: content,
-          stream: true, // Enable streaming
+          stream: true,
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Ollama API Error: ${response.status}`);
+        throw new Error(`API Error: ${response.status}`);
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let done = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
 
-        buffer += decoder.decode(value, { stream: true });
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
 
-        // Split the buffer into lines
-        const lines = buffer.split("\n");
-        buffer = lines.pop(); // Keep the last incomplete line
+          // Process each complete event (separated by double newlines)
+          const events = buffer.split("\n\n");
+          buffer = events.pop(); // Save incomplete chunk
 
-        // Process each complete line
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const json = JSON.parse(line);
-            yield json.response; // Yield the response text from the stream
-          } catch (err) {
-            console.error("Failed to parse JSON chunk:", line);
+          for (const event of events) {
+            if (!event.trim()) continue;
+
+            try {
+              // Extract data from SSE format (data: {...})
+              const dataStr = event.replace("data: ", "").trim();
+              if (!dataStr) continue;
+
+              const json = JSON.parse(dataStr);
+              yield json.content || json.response || "";
+            } catch (err) {
+              console.error("Error parsing event:", event, err);
+            }
           }
         }
       }

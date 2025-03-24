@@ -1,5 +1,9 @@
 ### Lagnchan
 
+- (install Tutorial)[https://js.langchain.com/docs/how_to/installation/]
+- https://js.langchain.com/docs/integrations/chat/ollama/
+- npm install @langchain/core @langchain/ollama
+
 ### Run with Ollama
 
 - install ollama

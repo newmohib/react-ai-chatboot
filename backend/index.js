@@ -1,48 +1,69 @@
 import express from "express";
 import cors from "cors";
-import axios from "axios";
+import { ChatOllama } from "@langchain/ollama";
+import { HumanMessage } from "@langchain/core/messages";
 
 const app = express();
 const PORT = 3000;
 
 app.use(cors());
+app.use(express.json());
 
-// Use express.json() to parse incoming JSON request bodies
-app.use(express.json()); // This is necessary to parse JSON data
-
-// Stream API from Ollama and return to frontend
 app.post("/message", async (req, res) => {
   try {
-    console.log(req.body); // This should now print the parsed JSON body
-    const { prompt } = req.body; // Extract the prompt from the body
+    const { prompt } = req.body;
 
-    const ollamaResponse = await axios({
-      method: "post",
-      url: "http://localhost:11434/api/generate", // Ollama API URL
-      data: {
-        model: "gemma3:1b",
-        prompt: prompt,
-        stream: true, // Ensure streaming is enabled
-      },
-      responseType: "stream", // Ensure we're getting a stream response
-    });
-
-    // Set response headers for streaming
+    // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // Pipe Ollama response stream to the frontend
-    ollamaResponse.data.pipe(res); // Use the `pipe` method to forward the stream to the client
-
-    // Optional: Handle the "end" of the stream from Ollama if needed
-    ollamaResponse.data.on("end", () => {
-      console.log("Stream ended");
-      res.end(); // End the response when the stream ends
+    const llm = new ChatOllama({
+      model: "gemma3:1b",
+      streaming: true,
     });
+
+    // Create proper LangChain message object
+    const message = new HumanMessage(prompt);
+
+    const stream = await llm.stream([message]);
+
+    // Stream the response chunks
+    for await (const chunk of stream) {
+      // Format to match Ollama's API response structure
+      const responseData = {
+        model: "gemma3:1b",
+        created_at: new Date().toISOString(),
+        response: chunk.content,
+        done: false,
+      };
+      res.write(`data: ${JSON.stringify(responseData)}\n\n`);
+    }
+
+    // Send final done message
+    const doneMessage = {
+      model: "gemma3:1b",
+      created_at: new Date().toISOString(),
+      response: "",
+      done: true,
+    };
+    res.write(`data: ${JSON.stringify(doneMessage)}\n\n`);
+    res.end();
   } catch (error) {
-    console.error("Error fetching Ollama stream:", error.message);
-    res.status(500).send("Error streaming response");
+    console.error("Error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      const errorData = {
+        model: "gemma3:1b",
+        created_at: new Date().toISOString(),
+        response: "",
+        error: error.message,
+        done: true,
+      };
+      res.write(`data: ${JSON.stringify(errorData)}\n\n`);
+      res.end();
+    }
   }
 });
 

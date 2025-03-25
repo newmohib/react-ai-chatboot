@@ -166,7 +166,6 @@ app.post("/embedding", async (req, res) => {
   }
 });
 
-
 // Enhanced Chat Endpoint with Vector Search
 app.post("/message", async (req, res) => {
   try {

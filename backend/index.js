@@ -95,7 +95,7 @@ app.post("/embedding", async (req, res) => {
 
           // File changed - remove old chunks
           console.log(`Detected changes in ${pdfFile}, removing old embeddings...`);
-          await collection.deleteMany({ "metadata.originalName": pdfFile });
+          await chunksCollection.deleteMany({ "metadata.originalName": pdfFile });
           updatedCount++;
         }
 
@@ -266,5 +266,4 @@ initializeDatabase().then(() => {
   });
 }).catch(err => {
   console.error("Failed to initialize database:", err);
-  process.exit(1);
 });

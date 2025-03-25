@@ -16,7 +16,7 @@ app.use(express.json());
 
 const GPT_MODEL = "llama3.2:latest";
 // MongoDB Configuration
-const MONGODB_URL = "mongodb+srv://admin:admin@aws-cluster.qs2el.mongodb.net/";
+const MONGODB_URL = "";
 const DB_NAME = "chatbotdb";
 const CHUNKS_COLLECTION = "documentChunks";
 const METADATA_COLLECTION = "documentsMetadata";

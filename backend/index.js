@@ -16,30 +16,49 @@ app.use(express.json());
 
 // MongoDB Configuration
 const MONGODB_URL = "mongodb://localhost:27017";
-const MONGODB_ATLAS_DB_NAME = "knowledgeBase";
-const MONGODB_ATLAS_COLLECTION_NAME = "documentChunks";
-const ATLAS_VECTOR_SEARCH_INDEX_NAME = "langchain-test-index-vectorstores";
+const DB_NAME = "chatbotdb";
+const CHUNKS_COLLECTION = "documentChunks";
+const METADATA_COLLECTION = "documentsMetadata";
+const SEARCH_INDEX_NAME = "message-context-index";
 const DOCUMENTS_PATH = "./documents";
 
+// MongoDB Client and Collections
 const client = new MongoClient(MONGODB_URL);
-const collection = client.db(MONGODB_ATLAS_DB_NAME).collection(MONGODB_ATLAS_COLLECTION_NAME);
+const db = client.db(DB_NAME);
+const chunksCollection = db.collection(CHUNKS_COLLECTION);
+const metadataCollection = db.collection(METADATA_COLLECTION);
 
+// Vector Store Configuration
 const embeddings = new OllamaEmbeddings({ model: "llama3.2:latest" });
-
 const vectorStore = new MongoDBAtlasVectorSearch(embeddings, {
-  collection,
-  indexName: ATLAS_VECTOR_SEARCH_INDEX_NAME,
+  collection: chunksCollection,
+  indexName: SEARCH_INDEX_NAME,
   textKey: "text",
   embeddingKey: "embedding",
 });
 
-async function calculateFileHash(filePath) {
-  const fileBuffer = await fs.promises.readFile(filePath);
-  const hashSum = crypto.createHash('sha256');
-  hashSum.update(fileBuffer);
-  return hashSum.digest('hex');
+// Initialize the database
+async function initializeDatabase() {
+  try {
+    await client.connect();
+    // Create indexes
+    await metadataCollection.createIndex({ fileName: 1 }, { unique: true });
+    await metadataCollection.createIndex({ lastProcessed: 1 });
+
+    console.log("Database connected and indexes verified");
+  } catch (error) {
+    console.error("Database initialization failed:", error);
+    throw error;
+  }
 }
 
+// Helper function to calculate file hash
+async function calculateFileHash(filePath) {
+  const fileBuffer = await fs.promises.readFile(filePath);
+  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+}
+
+// Embedding Endpoint
 app.post("/embedding", async (req, res) => {
   try {
     const files = await fs.promises.readdir(DOCUMENTS_PATH);
@@ -50,7 +69,6 @@ app.post("/embedding", async (req, res) => {
     let skippedCount = 0;
     const errors = [];
 
-    // Ensure MongoDB connection is open
     await client.connect();
 
     for (const pdfFile of pdfFiles) {
@@ -59,32 +77,27 @@ app.post("/embedding", async (req, res) => {
         const stats = await fs.promises.stat(filePath);
         const currentHash = await calculateFileHash(filePath);
 
-        // Check for existing documents with this filename
-        const existingDoc = await collection.findOne({
-          "metadata.originalName": pdfFile
-        }, {
-          sort: { "metadata.uploadedAt": -1 } // Get the most recent
+        // Check file tracker collection
+        const fileRecord = await metadataCollection.findOne({
+          fileName: pdfFile
         });
 
-        if (existingDoc) {
-          // Compare hash and modification time
-          const previousHash = existingDoc.metadata.fileHash;
-          const previousModified = existingDoc.metadata.fileModified;
-
-          if (previousHash === currentHash &&
-            new Date(previousModified).getTime() === stats.mtime.getTime()) {
+        if (fileRecord) {
+          // Compare with previous version
+          if (fileRecord.fileHash === currentHash &&
+            new Date(fileRecord.modifiedAt).getTime() === stats.mtime.getTime()) {
             skippedCount++;
             console.log(`Skipping ${pdfFile} - no changes detected`);
             continue;
           }
 
-          // If file changed, remove old chunks
+          // File changed - remove old chunks
           console.log(`Detected changes in ${pdfFile}, removing old embeddings...`);
           await collection.deleteMany({ "metadata.originalName": pdfFile });
           updatedCount++;
         }
 
-        // Process the PDF (either new or updated)
+        // Process the PDF
         const loader = new PDFLoader(filePath, { splitPages: true });
         const docs = await loader.load();
 
@@ -95,23 +108,37 @@ app.post("/embedding", async (req, res) => {
 
         const splitDocs = await splitter.splitDocuments(docs);
 
-        // Prepare documents with enhanced metadata
+        // Prepare documents with metadata
         const documents = splitDocs.map((doc) => ({
           pageContent: doc.pageContent,
           metadata: {
             ...doc.metadata,
             originalName: pdfFile,
-            uploadedAt: new Date(),
-            fileHash: currentHash,
-            fileModified: stats.mtime,
-            fileSize: stats.size
+            versionId: new Date().getTime(), // Using timestamp as version ID
+            uploadedAt: new Date()
           },
         }));
 
-        // Store in vector database
+        // Store chunks in vector database
         await vectorStore.addDocuments(documents);
+
+        // Update or create file tracker record
+        await metadataCollection.updateOne(
+          { fileName: pdfFile },
+          {
+            $set: {
+              fileHash: currentHash,
+              modifiedAt: stats.mtime,
+              size: stats.size,
+              lastProcessed: new Date(),
+              versionId: new Date().getTime()
+            }
+          },
+          { upsert: true }
+        );
+
         processedCount++;
-        console.log(`Successfully embedded ${pdfFile}`);
+        console.log(`Successfully processed ${pdfFile}`);
 
       } catch (error) {
         console.error(`Error processing ${pdfFile}:`, error);
@@ -122,20 +149,20 @@ app.post("/embedding", async (req, res) => {
     res.json({
       success: true,
       message: "Embedding process completed",
-      processed: processedCount,
-      updated: updatedCount,
-      skipped: skippedCount,
-      errors: errors
+      stats: {
+        new: processedCount - updatedCount,
+        updated: updatedCount,
+        skipped: skippedCount
+      },
+      errors: errors.length > 0 ? errors : undefined
     });
+
   } catch (error) {
     console.error("Embedding process failed:", error);
     res.status(500).json({
       success: false,
       error: error.message
     });
-  } finally {
-    // Consider whether to close the connection here or manage it elsewhere
-    // await client.close();
   }
 });
 
@@ -206,6 +233,12 @@ app.post("/message", async (req, res) => {
 
 const PORT = 3000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Call this when starting your application
+initializeDatabase().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error("Failed to initialize database:", err);
+  process.exit(1);
 });

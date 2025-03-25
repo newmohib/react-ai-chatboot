@@ -1,12 +1,12 @@
-import express from "express";
-import cors from "cors";
-import multer from "multer";
-import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
-import { HumanMessage } from "@langchain/core/messages";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
-import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
+import { HumanMessage } from "@langchain/core/messages";
 import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
+import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
+import cors from "cors";
+import express from "express";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { MongoClient } from "mongodb";
+import multer from "multer";
 // import fs from "fs/promises";
 import path from "path";
 
@@ -15,31 +15,27 @@ const PORT = 3000;
 const upload = multer({ storage: multer.memoryStorage() });
 
 // MongoDB Configuration
-const mongoUri = "mongodb://localhost:27017";
-const dbName = "knowledgeBase";
-const collectionName = "documentChunks";
+const MONGODB_URL = "mongodb://localhost:27017";
+const MONGODB_ATLAS_DB_NAME = "knowledgeBase";
+const MONGODB_ATLAS_COLLECTION_NAME = "documentChunks";
 const ATLAS_VECTOR_SEARCH_INDEX_NAME = "langchain-test-index-vectorstores";
 
-const client = new MongoClient(mongoUri);
+const client = new MongoClient(MONGODB_URL);
 
-const embeddings = OllamaEmbeddings({
-  model: "gemma3:1b",
+const collection = client
+  .db(MONGODB_ATLAS_DB_NAME)
+  .collection(MONGODB_ATLAS_COLLECTION_NAME);
+
+const embeddings = new OllamaEmbeddings({
+  model: "llama3.2:latest",
 });
-// Initialize vector store
-let vectorStore;
 
-async function initVectorStore() {
-  await client.connect();
-  const collection = client.db(dbName).collection(collectionName);
-  vectorStore = new MongoDBAtlasVectorSearch(
-    collection,
-    embeddings,
-    ATLAS_VECTOR_SEARCH_INDEX_NAME,
-    "cosine"
-  );
-}
-
-initVectorStore();
+const vectorStore = new MongoDBAtlasVectorSearch(embeddings, {
+  collection: collection,
+  indexName: ATLAS_VECTOR_SEARCH_INDEX_NAME,
+  textKey: "text",
+  embeddingKey: "embedding",
+});
 
 app.use(cors());
 app.use(express.json());
@@ -110,12 +106,8 @@ app.post("/process-static-pdf", async (req, res) => {
 });
 
 // For file uploads (keeping your original but fixed)
-app.post("/upload", upload.single("file"), async (req, res) => {
+app.post("/upload", async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
     // Create loader from buffer
     const loader = new PDFLoader("./documents/HelloWorld.pdf", {
       splitPages: true,
@@ -136,11 +128,10 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       pageContent: doc.pageContent,
       metadata: {
         ...doc.metadata,
-        originalName: req.file.originalname,
+        originalName: "HelloWorld.pdf",
         uploadedAt: new Date(),
       },
     }));
-    console.log({ documents }.documents[0].metadata);
 
     await vectorStore.addDocuments(documents);
 

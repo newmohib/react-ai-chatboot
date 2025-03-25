@@ -14,10 +14,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-
 const GPT_MODEL = "llama3.2:latest";
 // MongoDB Configuration
-const MONGODB_URL = "mongodb://localhost:27017";
+const MONGODB_URL = "";
 const DB_NAME = "chatbotdb";
 const CHUNKS_COLLECTION = "documentChunks";
 const METADATA_COLLECTION = "documentsMetadata";
@@ -57,14 +56,16 @@ async function initializeDatabase() {
 // Helper function to calculate file hash
 async function calculateFileHash(filePath) {
   const fileBuffer = await fs.promises.readFile(filePath);
-  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  return crypto.createHash("sha256").update(fileBuffer).digest("hex");
 }
 
 // Embedding Endpoint
 app.post("/embedding", async (req, res) => {
   try {
     const files = await fs.promises.readdir(DOCUMENTS_PATH);
-    const pdfFiles = files.filter(file => path.extname(file).toLowerCase() === '.pdf');
+    const pdfFiles = files.filter(
+      (file) => path.extname(file).toLowerCase() === ".pdf"
+    );
 
     let processedCount = 0;
     let updatedCount = 0;
@@ -81,21 +82,27 @@ app.post("/embedding", async (req, res) => {
 
         // Check file tracker collection
         const fileRecord = await metadataCollection.findOne({
-          fileName: pdfFile
+          fileName: pdfFile,
         });
 
         if (fileRecord) {
           // Compare with previous version
-          if (fileRecord.fileHash === currentHash &&
-            new Date(fileRecord.modifiedAt).getTime() === stats.mtime.getTime()) {
+          if (
+            fileRecord.fileHash === currentHash &&
+            new Date(fileRecord.modifiedAt).getTime() === stats.mtime.getTime()
+          ) {
             skippedCount++;
             console.log(`Skipping ${pdfFile} - no changes detected`);
             continue;
           }
 
           // File changed - remove old chunks
-          console.log(`Detected changes in ${pdfFile}, removing old embeddings...`);
-          await chunksCollection.deleteMany({ "metadata.originalName": pdfFile });
+          console.log(
+            `Detected changes in ${pdfFile}, removing old embeddings...`
+          );
+          await chunksCollection.deleteMany({
+            "metadata.originalName": pdfFile,
+          });
           updatedCount++;
         }
 
@@ -117,7 +124,7 @@ app.post("/embedding", async (req, res) => {
             ...doc.metadata,
             originalName: pdfFile,
             versionId: new Date().getTime(), // Using timestamp as version ID
-            uploadedAt: new Date()
+            uploadedAt: new Date(),
           },
         }));
 
@@ -133,15 +140,14 @@ app.post("/embedding", async (req, res) => {
               modifiedAt: stats.mtime,
               size: stats.size,
               lastProcessed: new Date(),
-              versionId: new Date().getTime()
-            }
+              versionId: new Date().getTime(),
+            },
           },
           { upsert: true }
         );
 
         processedCount++;
         console.log(`Successfully processed ${pdfFile}`);
-
       } catch (error) {
         console.error(`Error processing ${pdfFile}:`, error);
         errors.push({ file: pdfFile, error: error.message });
@@ -154,16 +160,15 @@ app.post("/embedding", async (req, res) => {
       stats: {
         new: processedCount - updatedCount,
         updated: updatedCount,
-        skipped: skippedCount
+        skipped: skippedCount,
       },
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
     });
-
   } catch (error) {
     console.error("Embedding process failed:", error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -171,6 +176,7 @@ app.post("/embedding", async (req, res) => {
 // Enhanced Chat Endpoint with Vector Search
 app.post("/message", async (req, res) => {
   try {
+    console.log("Received message:", req.body);
     const { prompt } = req.body;
 
     // Set SSE headers
@@ -191,19 +197,23 @@ app.post("/message", async (req, res) => {
     // 2. Determine response strategy based on context availability
     let message;
     if (relevantDocs.length === 0) {
+      console.log("No context found");
       // No context found - use generic response
       message = new HumanMessage({
-        content: `I couldn't find specific information about "${prompt}" in my knowledge base. ` +
+        content:
+          `I couldn't find specific information about "${prompt}" in my knowledge base. ` +
           `However, I can try to help based on my general knowledge. ` +
           `Could you please rephrase your question or provide more details?\n\n` +
-          `Question: ${prompt}`
+          `Question: ${prompt}`,
       });
     } else {
+      console.log("Context found");
       // Context found - use RAG approach
       message = new HumanMessage({
-        content: `Please answer the question using this context:\n${context}\n\n` +
+        content:
+          `Please answer the question using this context:\n${context}\n\n` +
           `Question: ${prompt}\n\n` +
-          `If the context doesn't contain the answer, say "I'm sorry, I don't have enough information about that specific topic."`
+          `If the context doesn't contain the answer, say "I'm sorry, I don't have enough information about that specific topic."`,
       });
     }
 
@@ -222,7 +232,7 @@ app.post("/message", async (req, res) => {
         created_at: new Date().toISOString(),
         response: chunk.content,
         context_used: relevantDocs.length > 0,
-        done: false
+        done: false,
       });
     }
 
@@ -232,11 +242,10 @@ app.post("/message", async (req, res) => {
       created_at: new Date().toISOString(),
       response: "",
       context_used: relevantDocs.length > 0,
-      done: true
+      done: true,
     });
 
     res.end();
-
   } catch (error) {
     console.error("Error:", error);
 
@@ -245,7 +254,7 @@ app.post("/message", async (req, res) => {
       created_at: new Date().toISOString(),
       response: "I'm sorry, I encountered an error processing your request.",
       error: error.message,
-      done: true
+      done: true,
     };
 
     if (!res.headersSent) {
@@ -260,10 +269,12 @@ app.post("/message", async (req, res) => {
 const PORT = 3000;
 
 // Call this when starting your application
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Failed to initialize database:", err);
   });
-}).catch(err => {
-  console.error("Failed to initialize database:", err);
-});

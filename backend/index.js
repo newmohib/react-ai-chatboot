@@ -16,7 +16,7 @@ app.use(express.json());
 
 const GPT_MODEL = "llama3.2:latest";
 // MongoDB Configuration
-const MONGODB_URL = "";
+const MONGODB_URL = "mongodb+srv://admin:admin@aws-cluster.qs2el.mongodb.net/";
 const DB_NAME = "chatbotdb";
 const CHUNKS_COLLECTION = "documentChunks";
 const METADATA_COLLECTION = "documentsMetadata";
@@ -193,6 +193,7 @@ app.post("/message", async (req, res) => {
     // 1. Search relevant documents from vector store
     const relevantDocs = await vectorStore.similaritySearch(prompt, 3);
     const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
+    console.log({ relevantDocs, context });
 
     // 2. Determine response strategy based on context availability
     let message;

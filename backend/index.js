@@ -3,182 +3,142 @@ import { HumanMessage } from "@langchain/core/messages";
 import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
 import cors from "cors";
+import crypto from "crypto";
 import express from "express";
+import fs from "fs";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { MongoClient } from "mongodb";
-import multer from "multer";
-// import fs from "fs/promises";
 import path from "path";
 
 const app = express();
-const PORT = 3000;
-const upload = multer({ storage: multer.memoryStorage() });
+app.use(cors());
+app.use(express.json());
 
 // MongoDB Configuration
 const MONGODB_URL = "mongodb://localhost:27017";
 const MONGODB_ATLAS_DB_NAME = "knowledgeBase";
 const MONGODB_ATLAS_COLLECTION_NAME = "documentChunks";
 const ATLAS_VECTOR_SEARCH_INDEX_NAME = "langchain-test-index-vectorstores";
+const DOCUMENTS_PATH = "./documents";
 
 const client = new MongoClient(MONGODB_URL);
+const collection = client.db(MONGODB_ATLAS_DB_NAME).collection(MONGODB_ATLAS_COLLECTION_NAME);
 
-const collection = client
-  .db(MONGODB_ATLAS_DB_NAME)
-  .collection(MONGODB_ATLAS_COLLECTION_NAME);
-
-const embeddings = new OllamaEmbeddings({
-  model: "llama3.2:latest",
-});
+const embeddings = new OllamaEmbeddings({ model: "llama3.2:latest" });
 
 const vectorStore = new MongoDBAtlasVectorSearch(embeddings, {
-  collection: collection,
+  collection,
   indexName: ATLAS_VECTOR_SEARCH_INDEX_NAME,
   textKey: "text",
   embeddingKey: "embedding",
 });
 
-app.use(cors());
-app.use(express.json());
+async function calculateFileHash(filePath) {
+  const fileBuffer = await fs.promises.readFile(filePath);
+  const hashSum = crypto.createHash('sha256');
+  hashSum.update(fileBuffer);
+  return hashSum.digest('hex');
+}
 
-// PDF Upload and Processing Endpoint
-// app.post("/upload", upload.single("file"), async (req, res) => {
-//   try {
-//     if (!req.file) {
-//       return res.status(400).json({ error: "No file uploaded" });
-//     }
-
-//     // Load PDF
-//     const loader = new PDFLoader(req.file.buffer);
-//     const docs = await loader.load();
-
-//     // Split text into chunks
-//     const splitter = new RecursiveCharacterTextSplitter({
-//       chunkSize: 1000,
-//       chunkOverlap: 200,
-//     });
-//     const splitDocs = await splitter.splitDocuments(docs);
-
-//     // Add metadata and store in MongoDB
-//     const documents = splitDocs.map((doc) => ({
-//       pageContent: doc.pageContent,
-//       metadata: {
-//         ...doc.metadata,
-//         originalName: req.file.originalname,
-//         uploadedAt: new Date(),
-//       },
-//     }));
-
-//     await vectorStore.addDocuments(documents);
-
-//     res.json({ success: true, chunks: documents.length });
-//   } catch (error) {
-//     console.error("Upload error:", error);
-//     res.status(500).json({ error: error.message });
-//   }
-// });
-
-// For static file processing
-
-// For static file processing
-app.post("/process-static-pdf", async (req, res) => {
+app.post("/embedding", async (req, res) => {
   try {
-    // eslint-disable-next-line no-undef
-    const pdfPath = path.join(process.cwd(), "documents", "knowledge.pdf");
+    const files = await fs.promises.readdir(DOCUMENTS_PATH);
+    const pdfFiles = files.filter(file => path.extname(file).toLowerCase() === '.pdf');
 
-    // Method 1: Using file path directly
-    // const loader = new PDFLoader(pdfPath);
-    const loader = new PDFLoader(pdfPath, {
-      splitPages: true,
+    let processedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    const errors = [];
+
+    // Ensure MongoDB connection is open
+    await client.connect();
+
+    for (const pdfFile of pdfFiles) {
+      try {
+        const filePath = path.join(DOCUMENTS_PATH, pdfFile);
+        const stats = await fs.promises.stat(filePath);
+        const currentHash = await calculateFileHash(filePath);
+
+        // Check for existing documents with this filename
+        const existingDoc = await collection.findOne({
+          "metadata.originalName": pdfFile
+        }, {
+          sort: { "metadata.uploadedAt": -1 } // Get the most recent
+        });
+
+        if (existingDoc) {
+          // Compare hash and modification time
+          const previousHash = existingDoc.metadata.fileHash;
+          const previousModified = existingDoc.metadata.fileModified;
+
+          if (previousHash === currentHash &&
+            new Date(previousModified).getTime() === stats.mtime.getTime()) {
+            skippedCount++;
+            console.log(`Skipping ${pdfFile} - no changes detected`);
+            continue;
+          }
+
+          // If file changed, remove old chunks
+          console.log(`Detected changes in ${pdfFile}, removing old embeddings...`);
+          await collection.deleteMany({ "metadata.originalName": pdfFile });
+          updatedCount++;
+        }
+
+        // Process the PDF (either new or updated)
+        const loader = new PDFLoader(filePath, { splitPages: true });
+        const docs = await loader.load();
+
+        const splitter = new RecursiveCharacterTextSplitter({
+          chunkSize: 1000,
+          chunkOverlap: 200,
+        });
+
+        const splitDocs = await splitter.splitDocuments(docs);
+
+        // Prepare documents with enhanced metadata
+        const documents = splitDocs.map((doc) => ({
+          pageContent: doc.pageContent,
+          metadata: {
+            ...doc.metadata,
+            originalName: pdfFile,
+            uploadedAt: new Date(),
+            fileHash: currentHash,
+            fileModified: stats.mtime,
+            fileSize: stats.size
+          },
+        }));
+
+        // Store in vector database
+        await vectorStore.addDocuments(documents);
+        processedCount++;
+        console.log(`Successfully embedded ${pdfFile}`);
+
+      } catch (error) {
+        console.error(`Error processing ${pdfFile}:`, error);
+        errors.push({ file: pdfFile, error: error.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Embedding process completed",
+      processed: processedCount,
+      updated: updatedCount,
+      skipped: skippedCount,
+      errors: errors
     });
-
-    // OR Method 2: Using file buffer
-    // const fileBuffer = await fs.readFile(pdfPath);
-    // const loader = new PDFLoader(fileBuffer);
-
-    const docs = await loader.load();
-
-    // Rest of your processing...
-    res.json({ success: true, chunks: docs.length });
   } catch (error) {
-    console.error("Static PDF processing error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Embedding process failed:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  } finally {
+    // Consider whether to close the connection here or manage it elsewhere
+    // await client.close();
   }
 });
 
-// For file uploads (keeping your original but fixed)
-app.post("/upload", async (req, res) => {
-  try {
-    // Create loader from buffer
-    const loader = new PDFLoader("./documents/HelloWorld.pdf", {
-      splitPages: true,
-    });
-
-    const docs = await loader.load();
-    // Rest of your processing code remains the same...
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
-    });
-
-    const splitDocs = await splitter.splitDocuments(docs);
-    console.log({ splitDocs });
-
-    // Add metadata and store in MongoDB
-    const documents = splitDocs.map((doc) => ({
-      pageContent: doc.pageContent,
-      metadata: {
-        ...doc.metadata,
-        originalName: "HelloWorld.pdf",
-        uploadedAt: new Date(),
-      },
-    }));
-
-    await vectorStore.addDocuments(documents);
-
-    // Rest of your processing...
-    res.json({ success: true, chunks: docs.length });
-  } catch (error) {
-    console.error("Upload processing error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// app.post("/upload", upload.single("file"), async (req, res) => {
-//   try {
-//     if (!req.file) {
-//       return res.status(400).json({ error: "No file uploaded" });
-//     }
-
-//     // Load PDF using the correct loader
-//     const loader = new PDFLoader(req.file.buffer, {
-//       splitPages: true, // Optional: keep pages separate
-//     });
-
-//     const docs = await loader.load();
-
-//     // Rest of your processing code remains the same...
-//     const splitter = new RecursiveCharacterTextSplitter({
-//       chunkSize: 1000,
-//       chunkOverlap: 200,
-//     });
-
-//     const splitDocs = await splitter.splitDocuments(docs);
-//     // Add metadata and store in MongoDB
-//     const documents = splitDocs.map((doc) => ({
-//       pageContent: doc.pageContent,
-//       metadata: {
-//         ...doc.metadata,
-//         originalName: req.file.originalname,
-//         uploadedAt: new Date(),
-//       },
-//     }));
-
-//     await vectorStore.addDocuments(documents);
-//   } catch (error) {
-//     console.error("Upload error:", error);
-//     res.status(500).json({ error: error.message });
-//   }
-// });
 
 // Enhanced Chat Endpoint with Vector Search
 app.post("/message", async (req, res) => {
@@ -243,6 +203,8 @@ app.post("/message", async (req, res) => {
     }
   }
 });
+
+const PORT = 3000;
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

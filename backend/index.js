@@ -1,15 +1,13 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import { ChatOllama } from "@langchain/ollama";
+import { ChatOllama, OllamaEmbeddings } from "@langchain/ollama";
 import { HumanMessage } from "@langchain/core/messages";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import { OllamaEmbeddings } from "@langchain/ollama"; // Updated import
 import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { MongoClient } from "mongodb";
 // import fs from "fs/promises";
-
 import path from "path";
 
 const app = express();
@@ -18,10 +16,15 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // MongoDB Configuration
 const mongoUri = "mongodb://localhost:27017";
-const client = new MongoClient(mongoUri);
 const dbName = "knowledgeBase";
 const collectionName = "documentChunks";
+const ATLAS_VECTOR_SEARCH_INDEX_NAME = "langchain-test-index-vectorstores";
 
+const client = new MongoClient(mongoUri);
+
+const embeddings = OllamaEmbeddings({
+  model: "gemma3:1b",
+});
 // Initialize vector store
 let vectorStore;
 
@@ -29,16 +32,10 @@ async function initVectorStore() {
   await client.connect();
   const collection = client.db(dbName).collection(collectionName);
   vectorStore = new MongoDBAtlasVectorSearch(
-    new OllamaEmbeddings({
-      model: "gemma3:1b", // Embedding model
-      baseUrl: "http://localhost:11434",
-    }),
-    {
-      collection,
-      indexName: "vector_index",
-      textKey: "text",
-      embeddingKey: "embedding",
-    }
+    collection,
+    embeddings,
+    ATLAS_VECTOR_SEARCH_INDEX_NAME,
+    "cosine"
   );
 }
 
@@ -85,39 +82,24 @@ app.use(express.json());
 // });
 
 // For static file processing
+
+// For static file processing
 app.post("/process-static-pdf", async (req, res) => {
   try {
     // eslint-disable-next-line no-undef
-    const pdfPath = path.join(process.cwd(), "documents", "./knowledge.pdf");
+    const pdfPath = path.join(process.cwd(), "documents", "knowledge.pdf");
 
     // Method 1: Using file path directly
-    const loader = new PDFLoader(pdfPath);
+    // const loader = new PDFLoader(pdfPath);
+    const loader = new PDFLoader(pdfPath, {
+      splitPages: true,
+    });
 
     // OR Method 2: Using file buffer
     // const fileBuffer = await fs.readFile(pdfPath);
     // const loader = new PDFLoader(fileBuffer);
 
     const docs = await loader.load();
-
-    // / Split text into chunks
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
-    });
-    const splitDocs = await splitter.splitDocuments(docs);
-
-    // Add metadata and store in MongoDB
-    const documents = splitDocs.map((doc) => ({
-      pageContent: doc.pageContent,
-      metadata: {
-        ...doc.metadata,
-        // originalName: req.file.originalname,
-        originalName: "knowledge.pdf",
-        uploadedAt: new Date(),
-      },
-    }));
-
-    await vectorStore.addDocuments(documents);
 
     // Rest of your processing...
     res.json({ success: true, chunks: docs.length });
@@ -127,19 +109,19 @@ app.post("/process-static-pdf", async (req, res) => {
   }
 });
 
+// For file uploads (keeping your original but fixed)
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Load PDF using the correct loader
-    const loader = new PDFLoader(req.file.buffer, {
-      splitPages: true, // Optional: keep pages separate
+    // Create loader from buffer
+    const loader = new PDFLoader("./documents/HelloWorld.pdf", {
+      splitPages: true,
     });
 
     const docs = await loader.load();
-
     // Rest of your processing code remains the same...
     const splitter = new RecursiveCharacterTextSplitter({
       chunkSize: 1000,
@@ -147,6 +129,8 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     });
 
     const splitDocs = await splitter.splitDocuments(docs);
+    console.log({ splitDocs });
+
     // Add metadata and store in MongoDB
     const documents = splitDocs.map((doc) => ({
       pageContent: doc.pageContent,
@@ -156,13 +140,54 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         uploadedAt: new Date(),
       },
     }));
+    console.log({ documents }.documents[0].metadata);
 
     await vectorStore.addDocuments(documents);
+
+    // Rest of your processing...
+    res.json({ success: true, chunks: docs.length });
   } catch (error) {
-    console.error("Upload error:", error);
+    console.error("Upload processing error:", error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// app.post("/upload", upload.single("file"), async (req, res) => {
+//   try {
+//     if (!req.file) {
+//       return res.status(400).json({ error: "No file uploaded" });
+//     }
+
+//     // Load PDF using the correct loader
+//     const loader = new PDFLoader(req.file.buffer, {
+//       splitPages: true, // Optional: keep pages separate
+//     });
+
+//     const docs = await loader.load();
+
+//     // Rest of your processing code remains the same...
+//     const splitter = new RecursiveCharacterTextSplitter({
+//       chunkSize: 1000,
+//       chunkOverlap: 200,
+//     });
+
+//     const splitDocs = await splitter.splitDocuments(docs);
+//     // Add metadata and store in MongoDB
+//     const documents = splitDocs.map((doc) => ({
+//       pageContent: doc.pageContent,
+//       metadata: {
+//         ...doc.metadata,
+//         originalName: req.file.originalname,
+//         uploadedAt: new Date(),
+//       },
+//     }));
+
+//     await vectorStore.addDocuments(documents);
+//   } catch (error) {
+//     console.error("Upload error:", error);
+//     res.status(500).json({ error: error.message });
+//   }
+// });
 
 // Enhanced Chat Endpoint with Vector Search
 app.post("/message", async (req, res) => {

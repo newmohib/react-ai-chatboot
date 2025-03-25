@@ -14,6 +14,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+
+const GPT_MODEL = "llama3.2:latest";
 // MongoDB Configuration
 const MONGODB_URL = "mongodb://localhost:27017";
 const DB_NAME = "chatbotdb";
@@ -29,7 +31,7 @@ const chunksCollection = db.collection(CHUNKS_COLLECTION);
 const metadataCollection = db.collection(METADATA_COLLECTION);
 
 // Vector Store Configuration
-const embeddings = new OllamaEmbeddings({ model: "llama3.2:latest" });
+const embeddings = new OllamaEmbeddings({ model: GPT_MODEL });
 const vectorStore = new MongoDBAtlasVectorSearch(embeddings, {
   collection: chunksCollection,
   indexName: SEARCH_INDEX_NAME,
@@ -176,55 +178,80 @@ app.post("/message", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // 1. First search relevant documents from vector store
-    const relevantDocs = await vectorStore.similaritySearch(prompt, 3);
-    const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
-
+    // Initialize LLM
     const llm = new ChatOllama({
-      model: "gemma3:1b",
+      model: GPT_MODEL,
       streaming: true,
     });
 
-    // Create message with context
-    const message = new HumanMessage({
-      content: `Context: ${context}\n\nQuestion: ${prompt}`,
-    });
+    // 1. Search relevant documents from vector store
+    const relevantDocs = await vectorStore.similaritySearch(prompt, 3);
+    const context = relevantDocs.map((doc) => doc.pageContent).join("\n\n");
 
-    const stream = await llm.stream([message]);
-
-    // Stream the response chunks
-    for await (const chunk of stream) {
-      const responseData = {
-        model: "gemma3:1b",
-        created_at: new Date().toISOString(),
-        response: chunk.content,
-        done: false,
-      };
-      res.write(`data: ${JSON.stringify(responseData)}\n\n`);
+    // 2. Determine response strategy based on context availability
+    let message;
+    if (relevantDocs.length === 0) {
+      // No context found - use generic response
+      message = new HumanMessage({
+        content: `I couldn't find specific information about "${prompt}" in my knowledge base. ` +
+          `However, I can try to help based on my general knowledge. ` +
+          `Could you please rephrase your question or provide more details?\n\n` +
+          `Question: ${prompt}`
+      });
+    } else {
+      // Context found - use RAG approach
+      message = new HumanMessage({
+        content: `Please answer the question using this context:\n${context}\n\n` +
+          `Question: ${prompt}\n\n` +
+          `If the context doesn't contain the answer, say "I'm sorry, I don't have enough information about that specific topic."`
+      });
     }
 
-    // Send final done message
-    const doneMessage = {
-      model: "gemma3:1b",
+    // 3. Stream the response
+    const stream = await llm.stream([message]);
+
+    // Helper function to write SSE messages
+    const writeSSE = (data) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Stream chunks
+    for await (const chunk of stream) {
+      writeSSE({
+        model: GPT_MODEL,
+        created_at: new Date().toISOString(),
+        response: chunk.content,
+        context_used: relevantDocs.length > 0,
+        done: false
+      });
+    }
+
+    // Final message
+    writeSSE({
+      model: GPT_MODEL,
       created_at: new Date().toISOString(),
       response: "",
-      done: true,
-    };
-    res.write(`data: ${JSON.stringify(doneMessage)}\n\n`);
+      context_used: relevantDocs.length > 0,
+      done: true
+    });
+
     res.end();
+
   } catch (error) {
     console.error("Error:", error);
+
+    const errorResponse = {
+      model: GPT_MODEL,
+      created_at: new Date().toISOString(),
+      response: "I'm sorry, I encountered an error processing your request.",
+      error: error.message,
+      done: true
+    };
+
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(500).json(errorResponse);
     } else {
-      const errorData = {
-        model: "gemma3:1b",
-        created_at: new Date().toISOString(),
-        response: "",
-        error: error.message,
-        done: true,
-      };
-      res.write(`data: ${JSON.stringify(errorData)}\n\n`);
+      res.write(`data: ${JSON.stringify(errorResponse)}\n\n`);
       res.end();
     }
   }
